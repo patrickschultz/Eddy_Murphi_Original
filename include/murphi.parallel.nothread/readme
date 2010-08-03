@@ -1,0 +1,19 @@
+Implementation documentation
+----------------------------
+
+The implementation including all the main algorithms used has been extensive 
+documented. The documentation for the file say mu_system.C is in the 
+corresponding .txt file, i.e., mu_system.C.txt. This includes the comments 
+from the .C source file as well as the additional comments.
+
+codeorg.txt gives a high level overview of the way the code is organized.
+
+The pseudocode for the heuristics can be obtained from the thesis, and their
+implementation can be followed by reading the code in mu_system.C along with 
+the corresponding .txt file.
+
+--------
+
+The various command line arguments can be seen by running the (compiled) 
+verifier that has been generated, using the -h command line argument. This will
+show the args for the various heuristics as well as the other arguments.

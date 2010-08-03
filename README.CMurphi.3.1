@@ -1,0 +1,91 @@
+===========================================================================
+
+Cached Murphi Release 3.1
+Finite-state Concurrent System Verifier with State Space Caching.
+
+
+Responsible for this release: Giuseppe Della Penna (gdellape@univaq.it)
+			      Enrico Tronci (tronci@univaq.it)
+
+===========================================================================
+
+This release is based on the original Murphi Release 3.1 and has been
+modified to implement state space caching. Responsible for the 
+original Murphi Release 3.1 is Ulrich Stern (uli@verify.stanford.edu).
+
+For more information about this release and the state space caching, 
+see the paper 
+
+E. Tronci, G. Della Penna, B. Intrigila, M. Venturini Zilli, 
+"Exploiting Transition Locality in Automatic Verification",
+Proceedings of: 11th Advanced Research Working Conference on
+Correct Hardware Design and Verification Methods (CHARME),
+4-7 September 2001, Livingston-Edinburgh (Scotland), LNCS, Springer-Verlag
+Co-sponsored by the IFIP TC10/WG10.5 Working Group on:
+Design and Engineering of Electronic Systems
+
+Postscript version of the above paper is in directory doc, 
+file charme01.ps.
+
+
+
+1. Modifications to the distribution files
+
+Directories bin, ex, doc are the same as in Murphi 3.1.
+Directories src, include have been modified w.r.t. Murphi 3.1.
+See the README.cmurphi files in each of these directories for
+more information.
+
+
+2. Modifications to the Murphi Compiler
+
+The following option has been added to the mu compiler:
+
+ --cache	enables the state caching
+
+When this option is specified, state space caching is enabled
+in the generated verifiers. If the option is not specified,
+the compiler generates the same verifiers as Murphi 3.1
+
+
+3. Modifications to the Murphi Verifier
+
+The following options have been added to the verifier:
+
+ -maxc<n>      highest admitted collision rate. Zero for no limit.
+               (percent value, default 90).
+
+This option tells the verifier to stop when the collision rate
+in the state cache it too high. The collision rate is the ratio
+states_overwritten(collisions) / states_written in the state
+cache. When this rate is too high, the cache is forgetting too
+many visited states and the state exploration may loop indefinitely.
+The default value for this option, 90, tells the verifier to stop
+when the 90% of the visited states overwrite an already visited state
+in the state cache.
+
+ -maxl<n>      maximum reachable bfs level. Zero for no limit.
+               (default is no limit).
+
+This option tells the verifier to stop when it begins the
+exploration of a particular level in the BFS tree.
+This may help to stop explorations that are looping when
+height of the search tree is known or can be estimated.
+
+The following options have been disabled:
+
+ -s 
+	
+ -vdfs
+
+The Cached Murphi state space caching algorithm works only
+with Breadth First Search, so the DFS and simulation options
+are disabled.
+
+
+3. Compiling the Cached Murphi Compiler and Verifier
+
+To compile the Cached Murphi Compiler, follow the instructions
+in the Readme file in src directory. 
+
+===========================================================================

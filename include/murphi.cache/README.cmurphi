@@ -1,0 +1,91 @@
+===========================================================================
+This directory contains the include files for the Cached Murphi Verifier 
+Release 3.1. 
+===========================================================================
+
+This distribution has been obtained by modifying the following
+files in the Murphi Verifier Release 3.1 distribution.
+
+mu_io.C
+   lines 138-141, 388-389, 482-542: Added code to support the cached murphi
+         verifier options -maxc and -maxl.
+
+   lines 344,1299-1317: Bug-fixed the print_progress method to print the progress
+         report when the verifier stops for an error (Notrace calls this
+         method, but it often does not output nothing due to the progress_count 
+         check! Adjusted adding a forceprint optional parameter.).
+
+   lines 754-757: Disabled the DFS option (not compatibile with cached murphi).
+
+   lines 999-1005: Added help lines for the cached murphi verifier options.
+
+   lines 1199-1203: Modified the print_algoritm method to print cached murphi 
+         information.
+
+   lines 1238-1256: Modified the print_header method
+         to print the copyright information for Cached Murphi.
+
+   lines 1333-1352: Added the print_level method to print information at the
+         beginning of each level.    
+
+   lines 1315-1331, 1364-1390: Modified the print_progress and print_summary methods
+         to print cached murphi information.
+
+   
+
+MU_IO.H
+   lines 286-289: Added code to support the cached murphi verifier options 
+         -maxc and -maxl.
+
+   line 318: New header for the bug-fixed version of print_progress.
+
+   line 319: Added prototype for the print_level() method.
+
+MU_STATECL.H
+   lines 195-210: Modified code to include the hashkey method 
+   (used by the modified simple_was_present) also when hash compaction 
+   is active.
+
+
+MU_UTIL.H
+   line 57: Modified #include directive to include the modified mu_statecl.h
+
+
+MU_SYSTEM.C
+   lines 64-75: Modified size calculation for the disk queue.
+
+   lines 90-115: Modified the Add method to support the insertion of states
+         (not pointers) in the queue.
+
+   lines 158-228: Modified the CheckLevel method to check the cached murphi
+         limits (collision rate and bfs level) and stop the exploration if
+         one of these is reached.
+
+   line 182: Added a call to Reporter->print_level() when a new
+         level begins.
+
+   lines 282-285: Added the NumOverwrites() method.
+
+
+MU_SYSTEM.H
+   line 88: Modified prototype for the CheckLevel() method.
+   line 98: Added prototype for the NumOverwrites() method.
+   line 99: Added the CurrentLevel() inline method.
+
+
+MU_STATE.C
+MU_STATE.H
+   The state_queue class is modified to implement the disk-extended
+   queue. All the methods are updated, and the two methods
+   ReclaimFreeSpace() and QueueEmptyFault() have been added to support
+   the swap-in and swap-out procudures.
+   The current implementation uses two swapfiles to lower the 
+   disk space consumption (a file is deleted and recreated 
+   when its elements have been all read back in memory) and 
+   maintains in memory the first and the last segment of the queue.
+
+   The state_set class is modified to act like a cache rather than a
+   hash table. The contructor is updated and the simple_was_present
+   method is partially rewritten.
+
+===========================================================================
