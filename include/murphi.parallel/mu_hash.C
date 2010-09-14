@@ -1,4 +1,4 @@
-/* -*- C++ -*-
+/** -*- C++ -*-
  * mu_hash.C
  * @(#) Hash function class
  *

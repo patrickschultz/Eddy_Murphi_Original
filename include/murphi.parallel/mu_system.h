@@ -1,6 +1,6 @@
-/* -*- C++ -*-
- * mu_system.h
- * @(#) header defining the environment for the system
+/** -*- C++ -*-
+ * @file mu_system.h
+ * header defining the environment for the system
  *      to be simulated or verified
  *
  * Copyright (C) 1992 - 1999 by the Board of Trustees of              
@@ -257,6 +257,7 @@ SymmetryManager *Symmetry;	// manager for all symmetry information
 POManager *PO;			// manager for all symmetry information
 ReportManager *Reporter;	// manager for all diagnostic messages
 AlgorithmManager *Algorithm;	// manager for all algorithm related issue*/
+
 StartStateManager *StartState = NULL;	
 RuleManager *Rules = NULL;		
 PropertyManager *Properties = NULL;	

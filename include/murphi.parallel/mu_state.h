@@ -1,4 +1,4 @@
-/* -*- C++ -*- 
+/** -*- C++ -*-
  * mu_state.h
  * @(#) header for routines related to states in the verifier
  *

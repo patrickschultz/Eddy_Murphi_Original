@@ -1,4 +1,4 @@
-/* -*- C++ -*-
+/** -*- C++ -*-
  * mu_util.h
  * @(#) header for Auxiliary routines for the driver for Murphi verifiers.
  *

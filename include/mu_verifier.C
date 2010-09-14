@@ -1,4 +1,4 @@
-/* -*- C++ -*-
+/** -*- C++ -*-
  * mu_verifier.C
  * @(#) Main routines for the driver for Murphi verifiers.
  *

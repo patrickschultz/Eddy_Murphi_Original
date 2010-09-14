@@ -1,4 +1,4 @@
-/* -*- C++ -*-
+/** -*- C++ -*-
  * mu_io.h
  * @(#) header of the interface routines
  *      for the driver for Murphi verifiers.

@@ -1,4 +1,4 @@
-/* -*- C++ -*-
+/** -*- C++ -*-
  * mu_io.C * @(#) interface routines for the driver for Murphi verifiers.
  *
  * Copyright (C) 1992 - 1999 by the Board of Trustees of              

@@ -1,4 +1,4 @@
-/* -*- C++ -*-
+/** -*- C++ -*-
  * mu_verifier.h
  * @(#) common information used by the generated code of Murphi verifiers
  *      and supporting codes. 
