@@ -2,7 +2,7 @@
   Program "ldash.m" compiled by "Eddy_Murphi Release 3.2.4"
 
   Murphi Last Modefied Date: "June 19 2009"
-  Murphi Last Compiled date: "Aug  1 2010"
+  Murphi Last Compiled date: "Sep 14 2010"
  ******************************/
 
 /********************

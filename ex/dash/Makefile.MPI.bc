@@ -45,7 +45,7 @@ INCLUDEPATH = ../../include
 
 CXX = mpiCC 
 
-CFLAGS = -DSYSCONF_RDCL -Wno-deprecated -DHASHC_TRACE
+CFLAGS = -DSYSCONF_RDCL -Wno-deprecated -DHASHC_TRACE -DENABLE_FILE_LOGGING
 
 LINKOPT=-lpthread
 

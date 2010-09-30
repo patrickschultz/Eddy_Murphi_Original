@@ -84,6 +84,8 @@ commQueue::commQueue(int bufSize, int stLen, int auxLen, int  numBufs):
   WaitingTBA = 0;  //set to first element
   Active = -1; //set to inactive
   WaitingTBS = -1; //inactive
+
+  owner = -1;
 }
 
 //
@@ -320,3 +322,12 @@ unsigned long commQueue::memory_allocated(int BuffSize, int StateLen, int AuxLen
 	 (unsigned long)(cQueue::memory_allocated(BuffSize, StateLen, AuxLen)*NumBuffs);
 }
 
+int commQueue::getOwner()
+{
+	return owner;
+}
+
+void commQueue::setOwner(int _owner)
+{
+	owner = _owner;
+}

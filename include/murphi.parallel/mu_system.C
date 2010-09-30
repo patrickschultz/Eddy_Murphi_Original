@@ -194,11 +194,11 @@ bool StateManager::Add(state * s, bool valid, bool permanent, bool mayEnqueue) {
 		if (mayEnqueue) /* it seems to be always true, I cannot remember why it is (was?) useful */
 #ifdef HASHC_TRACE
 			if (args->trace_file.value)
-			queue->enqueue (s, true, TraceFile->numLast ());
+				queue->enqueue(s, true, TraceFile->numLast());
 			else
-			queue->enqueue (s, true);
+				queue->enqueue(s, true);
 #else
-			queue->enqueue(s, true);
+		queue->enqueue(s, true);
 #endif
 		Reporter->print_progress();
 		return TRUE;
@@ -269,7 +269,7 @@ bool StateManager::ParTerminate() {
 state *
 StateManager::QueueDequeue(bool &checked, unsigned long &numCurState) {
 #ifdef HASHC_TRACE
-	return queue->dequeue (checked, numCurState);
+	return queue->dequeue(checked, numCurState);
 #else
 	NumCurState++;
 	return queue->dequeue(checked);
@@ -1143,7 +1143,7 @@ void AlgorithmManager::verify_bfs() {
 				continue;
 #ifdef HASHC_TRACE
 			if (args->trace_file.value)
-			NumCurState = TraceFile->numLast ();
+				NumCurState = TraceFile->numLast();
 #endif
 		}
 		/* IM<e> */
@@ -1206,7 +1206,7 @@ void AlgorithmManager::verify_bfs() {
 	}
 #ifdef HASHC_TRACE
 	else if (result != 'y' && args->print_trace.value)
-	Communicate->LoopForStates_nothreads();
+		Communicate->LoopForStates_nothreads();
 #endif
 	/* IM<e> */
 }

@@ -38,6 +38,9 @@ commManager::commManager(void(*Hashstats)(int, unsigned long *, double *,
 	Sent = 0;
 	Max_states_in_msg = 0;
 	Avg_states_in_msg = 0;
+	currentTakeoverAffirmation = 0;
+	pendingQueueTakover = false;
+	queuesUnOwned = true;
 
 	/// Initialize status flags
 	workerWaiting = false;
@@ -46,7 +49,7 @@ commManager::commManager(void(*Hashstats)(int, unsigned long *, double *,
 	/// This starts the MPI system and sets the initial time (iTime)
 	/// and gets the count of nodes and the rank of this node
 	MPI_Init(argc, argv);
-	MPI_Barrier( MPI_COMM_WORLD);
+	MPI_Barrier(MPI_COMM_WORLD);
 	iTime = MPI_Wtime();
 	MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
 	MPI_Comm_rank(MPI_COMM_WORLD, &myRank);
@@ -85,16 +88,17 @@ commManager::commManager(void(*Hashstats)(int, unsigned long *, double *,
 }
 
 void commManager::DoBarrierAndFinalize() {
-	MPI_Barrier( MPI_COMM_WORLD);
+	MPI_Barrier(MPI_COMM_WORLD);
 	MPI_Finalize();
 }
 
+#define BUFF_FACTOR 2
 //
 // This initializes the communication queues (needs to be called after the
 // processing of the command line, which in turn needs MPI to br turned on)
 //
 void commManager::InitializeCommQueues(int NumBuffs, int BuffSize) {
-	this->NumBuffs = NumBuffs;
+	this->NumBuffs = NumBuffs * BUFF_FACTOR;
 	this->BuffSize = BuffSize;
 	Min_states_in_msg = NumBuffs * BuffSize;
 	/// This initializes the MPI request logical stacks (idle and active)
@@ -113,11 +117,15 @@ void commManager::InitializeCommQueues(int NumBuffs, int BuffSize) {
 
 	/// This creates and initializes the communication queues, one for each
 	/// other node in the MPI world
-	queues = new commQueue*[numProcs];
-	for (int rank = 0; rank < numProcs; rank++) {
-		if (rank == myRank)
-			continue;
-		queues[rank] = new commQueue(BuffSize, StateLen, AuxLen, NumBuffs);
+	queues = new commQueue*[this->NumBuffs];
+	for (int buffNum = 0; buffNum < this->NumBuffs; buffNum++) {
+		/*		if (rank == myRank)
+		 continue;*/
+		queues[buffNum] = new commQueue(BuffSize, StateLen, AuxLen,
+				this->NumBuffs);
+		// Set the first buffers to each processor
+		if (buffNum < numProcs)
+			queues[buffNum]->setOwner(buffNum);
 	}
 }
 
@@ -197,6 +205,10 @@ commManager::~commManager() {
 #endif
 }
 
+int commManager::getNumBuffers() {
+	return NumBuffs;
+}
+
 //
 // Computation terminated, stop also the other nodes
 //
@@ -231,6 +243,10 @@ void commManager::DisplayMPIError(std::string location, int MPIcode) {
 	mutexes->UnLockMutex(MUTEX_PRINT);
 }
 
+inline int commManager::lookupOwner(int ownerKey) {
+	return queues[ownerKey]->getOwner();
+}
+
 //
 // Called by the worker thread when a state not owned by the current node is
 // reached; instead of immediately sending the state, will attempt to push 
@@ -240,14 +256,16 @@ void commManager::DisplayMPIError(std::string location, int MPIcode) {
 // DoSends will eventually perform the MPI_Isend of a whole queue line (so, many
 // states are sent at the same time to their owner)
 //
-int commManager::PushState(char* state, int owner) {
+int commManager::PushState(char* state, int ownerKey) {
 	int retVal = CATASTROPHIC_FAILURE;
 	int tryCount = 0, totalTryCount = 0;
 
-	if (owner < 0 || owner > numProcs || state == NULL)
+	if (ownerKey < 0 || ownerKey >= NumBuffs || state == NULL)
 		return retVal;
 
-	if (owner == myRank)
+	int owner = lookupOwner(ownerKey);
+
+	if (owner == myRank || owner < 0)
 		return retVal;
 
 	// Set the node color to black, meaning that this node has initiated work elsewhere
@@ -300,7 +318,17 @@ void commManager::CheckStableCondition() {
 		if (workWaiting() == 0) {
 			workerWaiting = true;
 			LOG_VERBOSE(" (threading) Worker idle, going to sleep.\n");
-			mutexes->WaitMutex(SIGNAL_WRKR_SLP);
+
+			int retCond = ETIMEDOUT; // Makes the loop execute
+			while (retCond == ETIMEDOUT && !Terminate) {
+				struct timespec ts;
+				clock_gettime(CLOCK_REALTIME, &ts);
+				ts.tv_sec += 1;
+				retCond = mutexes->WaitTimedMutex(SIGNAL_WRKR_SLP, &ts);
+				if (workWaiting() == 0 && !pendingQueueTakover && retCond
+						== ETIMEDOUT)
+					RequestQueueTakover();
+			}
 		}
 		// otherwise, in the meanwhile the communication thread was able to fill the
 		// local consumption queue again...
@@ -381,10 +409,15 @@ bool commManager::DoSends() {
 	bool didWork = false;
 	MPI_Request req;
 
-	for (int node = 0; node < numProcs; node++) {
-		if (node == myRank)
+	for (int queue = 0; queue < NumBuffs; queue++) {
+		if (queue == myRank)
 			continue;
-		if (m_stateReplyCount[node] < 0) {
+
+		int owner = lookupOwner(queue);
+
+		if (owner < 0)
+			continue;
+		if (m_stateReplyCount[queue] < 0) {
 			didWork = true;
 			continue;
 		}
@@ -392,7 +425,7 @@ bool commManager::DoSends() {
 		// get a buffer waiting to be sent from 'node's queue
 		// here (and in the equivalent call below) workerWaiting is used speedup purposes,
 		// so never mind if it changes immediately after the call...
-		retVal = queues[node]->GetBufferToCopy(&buf, &len, &index,
+		retVal = queues[queue]->GetBufferToCopy(&buf, &len, &index,
 				workerWaiting);
 
 		// keep sending as long as there are buffers to send in 'node's' commQueue
@@ -400,13 +433,13 @@ bool commManager::DoSends() {
 		if (retVal == SUCCESS) {
 			// set return from this function showing we worked
 			didWork = true;
-			err = MPI_Isend(buf, len, MPI_CHAR, node, MESSAGE_STATES,
+			err = MPI_Isend(buf, len, MPI_CHAR, owner, MESSAGE_STATES,
 					MPI_COMM_WORLD, &req);
 
 			// decrement replyCount
-			m_stateReplyCount[node]--;
+			m_stateReplyCount[queue]--;
 
-			LOG_VERBOSE(" (communicate) Sending states to node %d (reply count %d)\n", node, m_stateReplyCount[node]);
+			LOG_VERBOSE(" (communicate) Sending states from queue %d to node %d (reply count %d)\n", queue, owner, m_stateReplyCount[queue]);
 
 			if (err) {
 				// hits this block if there was an error in the MPI send
@@ -421,9 +454,9 @@ bool commManager::DoSends() {
 				Min_states_in_msg = len;
 			Avg_states_in_msg += len;
 			// add MPI send request to the request stack
-			assert( PushReq(req, node, index) ); //should never fail
+			assert( PushReq(req, owner, index) ); //should never fail
 			// see if there are more waiting to be sent
-			retVal = queues[node]->GetBufferToCopy(&buf, &len, &index,
+			retVal = queues[queue]->GetBufferToCopy(&buf, &len, &index,
 					workerWaiting);
 
 		} // exit when retVal is not SUCCESS
@@ -517,31 +550,28 @@ bool commManager::RecoverBuffers(bool &hasPendingSends) {
 		}
 
 #ifdef ENABLE_FILE_LOGGING
-		if (LOG_LIMIT_AVAIL(COMM_QUEUE_PENDING_ID, 1))
-		{
+		if (LOG_LIMIT_AVAIL(COMM_QUEUE_PENDING_ID, 1)) {
 			LOG_VERBOSE(" (comm-queues) Recover buffer stats (%d of %d buffers used):\n", numBuffersUsed, NumBuffs*numProcs);
-			for (int i = 0; i < numProcs; i++)
-			{
+			for (int i = 0; i < numProcs; i++) {
 				int numBuffsBeingSent = 0;
 				int index = reqHead;
 				int next;
 
 				if (reqHead != -1)
-				next = reqArray[reqHead].next;
+					next = reqArray[reqHead].next;
 
-				while (index != -1)
-				{
+				while (index != -1) {
 					if (reqArray[index].node == i)
-					numBuffsBeingSent++;
+						numBuffsBeingSent++;
 
 					index = next;
 
 					if (next != -1)
-					next = reqArray[next].next;
+						next = reqArray[next].next;
 				}
 
 				if (numBuffsBeingSent > 0)
-				LOG_VERBOSE("   (comm-queues) Sending states still pending to node %d (%d buffers currently being sent).\n", i, numBuffsBeingSent);
+					LOG_VERBOSE("   (comm-queues) Sending states still pending to node %d (%d buffers currently being sent).\n", i, numBuffsBeingSent);
 			}
 		}
 #endif
@@ -1086,9 +1116,156 @@ void commManager::ReceiveTermProbe() {
 	}
 }
 
+void commManager::RequestQueueTakover() {
+	if (!queuesUnOwned || pendingQueueTakover)
+		return;
+	MPI_Request req;
+	int err;
+	int request = 0; // We dont care
+	LOG_VERBOSE(" RequestQueueTakover() Requesting a queue to takeover.\n");
+
+	err = MPI_Isend(&request, QUEUE_TAKEOVER_REQUEST_INT_LENGTH,
+			MPI_UNSIGNED_LONG, Root(), QUEUE_TAKEOVER_REQUEST, MPI_COMM_WORLD,
+			&req);
+
+	if (err) {
+		DisplayMPIError("BroadcastCancelQueueTakover(), MPI_Isend()", err);
+	}
+}
+
+void commManager::ReceiveQueueTakoverRequest() {
+	//TODO assert(myRank == Root());
+	int err;
+	int request;
+	MPI_Status status;
+
+	LOG_VERBOSE(" ReceiveQueueTakoverRequest() Received a queue takeover request.\n");
+	// MPI receive token
+	err = MPI_Recv(&request, QUEUE_TAKEOVER_REQUEST_INT_LENGTH, MPI_INT,
+			MPI_ANY_SOURCE, QUEUE_TAKEOVER_REQUEST, MPI_COMM_WORLD, &status);
+	if (err) {
+		DisplayMPIError("ReceiveQueueTakoverRequest() in ReceiveTermProbe()",
+				err);
+		BroadcastAndEnd();
+		return;
+	}
+
+	int response = -1;
+	if (queuesUnOwned) {
+		bool queueAvail = false;
+		for (int i = numProcs; i < NumBuffs; i++) {
+			if (queues[i]->getOwner() == -1) {
+				response = i;
+				queues[i]->setOwner(status.MPI_SOURCE);
+				queueAvail = true;
+				break;
+			}
+		}
+
+		if (!queueAvail || response == (NumBuffs - 1)) {
+			queuesUnOwned = false;
+			LOG_VERBOSE(" ReceiveQueueTakoverRequest() All queues have been exhausted.\n");
+		}
+	}
+
+	LOG_VERBOSE(" ReceiveQueueTakoverRequest() Sending queue takover response to rank[%d] with queue[%d].\n", status.MPI_SOURCE, response );
+	MPI_Request req;
+	int buf[2];
+	buf[0] = status.MPI_SOURCE;
+	buf[1] = response;
+
+	err = BroadcastMessage(buf, QUEUE_TAKEOVER_REPLY_INT_LENGTH, MPI_INT,
+			QUEUE_TAKEOVER_REPLY, MPI_COMM_WORLD, &req, string(__func__));
+	if (err)
+		DisplayMPIError("BroadcastCancelQueueTakover(), MPI_Isend()", err);
+
+	// The last buffer was awarded
+	if (response == NumBuffs - 1) {
+		buf[0] = myRank;
+		buf[1] = -1;
+		err = BroadcastMessage(buf, QUEUE_TAKEOVER_REPLY_INT_LENGTH, MPI_INT,
+				QUEUE_TAKEOVER_REPLY, MPI_COMM_WORLD, &req, string(__func__));
+		if (err)
+			DisplayMPIError("BroadcastCancelQueueTakover(), MPI_Isend()", err);
+	}
+
+}
+
+void commManager::ReceiveQueueTakeoverReply() {
+	MPI_Status stat;
+	int err;
+	int response[2];
+	LOG_VERBOSE(" ReceiveQueueTakeoverReply() Received a queue takeover reply. Updating queue status.\n");
+
+	err = MPI_Recv(response, QUEUE_TAKEOVER_REPLY_INT_LENGTH, MPI_INT,
+			MPI_ANY_SOURCE, QUEUE_TAKEOVER_REPLY, MPI_COMM_WORLD, &stat);
+	if (err) {
+		DisplayMPIError("ReceiveQueueTakeoverMessages(), MPI_Recv()", err);
+		BroadcastAndEnd();
+		return;
+	}
+
+	int rank = response[0];
+	int takeoverQueue = response[1];
+
+	LOG_VERBOSE(" ReceiveQueueTakeoverReply() Response[%d], requesting rank[%d].\n", takeoverQueue, rank);
+
+	if (takeoverQueue == -1) {
+		queuesUnOwned = false;
+		if (rank == myRank) {
+			pendingQueueTakover = false;
+		}
+		return;
+	} else if (takeoverQueue >= 0) {
+
+		queues[takeoverQueue]->setOwner(rank);
+
+		if (rank == myRank) {
+
+			// Take queue line back
+			int bufferAvail;
+			char *buf;
+			int len;
+			int index;
+			bool force = true;
+
+			bufferAvail = queues[takeoverQueue]->GetBufferToCopy(&buf, &len,
+					&index, force);
+			while (bufferAvail == SUCCESS) {
+				int newWork = (*queue)(buf, len);
+				bufferAvail = queues[takeoverQueue]->GetBufferToCopy(&buf,
+						&len, &index, force);
+			}
+
+			pendingQueueTakover = false;
+		}
+	}
+}
+
+int commManager::BroadcastMessage(void* buf, int size, MPI_Datatype dType,
+		int mTag, MPI_Comm comm, MPI_Request *req, std::string funcName) {
+
+	int err;
+
+	for (int rank = 0; rank < numProcs; rank++) {
+		if (rank == myRank)
+			continue;
+
+		err = MPI_Isend(buf, size, dType, rank, mTag, comm, req);
+		if (err) {
+			string errorString = "BroadcastMessage() [";
+			errorString += funcName;
+			errorString += "], MPI_Isend()";
+			DisplayMPIError(errorString, err);
+			return err;
+		}
+	}
+	return err;
+}
+
 //
-// It is called in the comm thread main loop, nad probes all the MPI channels for 
-// any incoming message; if some incoming message is present, calls the appropriate 
+// It is called in the comm thread main loop, nad probes all the MPI channels for
+// any incoming message; if some incoming message is present, calls the appropriate
 // function handling it (on the basis of the message tag)
 // Returns true if at least one message has been received, but could also not
 // return at all (e.g., if ReceiveTerminate is called)
@@ -1145,12 +1322,36 @@ bool commManager::ProcessMessages() {
 		retVal = true;
 	}
 
+	//  QUEUE_TAKEOVER_REQUEST tag
+	err = MPI_Iprobe(MPI_ANY_SOURCE, QUEUE_TAKEOVER_REQUEST, MPI_COMM_WORLD,
+			&flag, &status);
+	if (err) {
+		DisplayMPIError("MPI_Iprobe() in ProcessMessages()", err);
+		BroadcastAndEnd();
+	}
+	if (flag) {
+		ReceiveQueueTakoverRequest();
+		retVal = true;
+	}
+
+	//  QUEUE_TAKEOVER_REPLY tag
+	err = MPI_Iprobe(MPI_ANY_SOURCE, QUEUE_TAKEOVER_REPLY, MPI_COMM_WORLD,
+			&flag, &status);
+	if (err) {
+		DisplayMPIError("MPI_Iprobe() in ProcessMessages()", err);
+		BroadcastAndEnd();
+	}
+	if (flag) {
+		ReceiveQueueTakeoverReply();
+		retVal = true;
+	}
+
 	return retVal;
 }
 
 //
 // This is the comm thread main loop, processing messages,
-// recovering buffers, doing sends and doing stable condition 
+// recovering buffers, doing sends and doing stable condition
 // token processing loop
 //
 void commManager::Run_commMgr(void *dummy) {
@@ -1212,18 +1413,18 @@ void commManager::print_capacity() {
 //
 // Called by root when the trace has been completely printed, causes LoopForStates_nothreads to break the while
 //
-void commManager::ExitLoopForStates_nothreads()
-{
+void commManager::ExitLoopForStates_nothreads() {
 	int err, dummy[numProcs - 1], sum_flags = 0, flags[numProcs - 1];
 	MPI_Request req[numProcs - 1];
 	MPI_Status status;
 
 	for (int rank = 1; rank < numProcs; rank++) {
 		/* don't mind what it is sent */
-		err = MPI_Isend(&dummy[rank - 1], MESSAGE_TERMINATE_TRACE_INT_LENGTH, MPI_INT, rank, MESSAGE_TERMINATE_TRACE,
-				MPI_COMM_WORLD, &req[rank - 1]);
+		err = MPI_Isend(&dummy[rank - 1], MESSAGE_TERMINATE_TRACE_INT_LENGTH,
+				MPI_INT, rank, MESSAGE_TERMINATE_TRACE, MPI_COMM_WORLD,
+				&req[rank - 1]);
 		if (err)
-		DisplayMPIError("ExitLoopForStates_nothreads(), MPI_Isend()", err);
+			DisplayMPIError("ExitLoopForStates_nothreads(), MPI_Isend()", err);
 		flags[rank - 1] = 0;
 	}
 	/* This while is to allow using local variables in sending */
@@ -1232,9 +1433,10 @@ void commManager::ExitLoopForStates_nothreads()
 			if (!flags[rank]) {
 				err = MPI_Test(&req[rank], &flags[rank], &status);
 				if (err)
-				DisplayMPIError("MPI_Test() in ExitLoopForStates_nothreads()", err);
+					DisplayMPIError(
+							"MPI_Test() in ExitLoopForStates_nothreads()", err);
 				if (flags[rank])
-				sum_flags++;
+					sum_flags++;
 			}
 		}
 	}
@@ -1242,27 +1444,31 @@ void commManager::ExitLoopForStates_nothreads()
 
 //
 // Called by root to find a state in the trace file of some other node
-// To fulfill the request, asks the node the relative info, waits for the answer and 
+// To fulfill the request, asks the node the relative info, waits for the answer and
 // then receives it when it is ready, then returns it
 //
-void commManager::QueryStateOnTrace_nothreads(unsigned long number, int rank, unsigned long *buf1, int *buf2)
-{
-	int err, flag[3] = {0, 0, 0}, flag_err;
+void commManager::QueryStateOnTrace_nothreads(unsigned long number, int rank,
+		unsigned long *buf1, int *buf2) {
+	int err, flag[3] = { 0, 0, 0 }, flag_err;
 	MPI_Request req;
 	MPI_Status status;
 
-	err = MPI_Isend(&number, MESSAGE_STATES_TRACE_QUERY_ULONG_LENGTH, MPI_UNSIGNED_LONG, rank, MESSAGE_STATES_TRACE_QUERY,
+	err = MPI_Isend(&number, MESSAGE_STATES_TRACE_QUERY_ULONG_LENGTH,
+			MPI_UNSIGNED_LONG, rank, MESSAGE_STATES_TRACE_QUERY,
 			MPI_COMM_WORLD, &req);
 	if (err)
-	DisplayMPIError("QueryStateOnTrace_nothreads(), MPI_Isend()", err);
+		DisplayMPIError("QueryStateOnTrace_nothreads(), MPI_Isend()", err);
 	while (!flag[0] || !flag[1]) {
 		if (!flag[0]) {
-			err = MPI_Iprobe(rank, MESSAGE_STATES_TRACE_ANS1, MPI_COMM_WORLD, &flag[0], &status);
+			err = MPI_Iprobe(rank, MESSAGE_STATES_TRACE_ANS1, MPI_COMM_WORLD,
+					&flag[0], &status);
 			if (err)
-			DisplayMPIError("MPI_Iprobe() in QueryStateOnTrace_nothreads()", err);
+				DisplayMPIError(
+						"MPI_Iprobe() in QueryStateOnTrace_nothreads()", err);
 			if (flag[0]) {
 #if __WORDSIZE == 32
-				err = MPI_Recv(buf1, MESSAGE_STATES_TRACE_ANS1_ULONG_LENGTH, MPI_UNSIGNED_LONG, rank, MESSAGE_STATES_TRACE_ANS1,
+				err = MPI_Recv(buf1, MESSAGE_STATES_TRACE_ANS1_ULONG_LENGTH,
+						MPI_UNSIGNED_LONG, rank, MESSAGE_STATES_TRACE_ANS1,
 						MPI_COMM_WORLD, &status);
 #else
 				err = MPI_Recv(buf1, MESSAGE_STATES_TRACE_ANS1_ULONG_LENGTH, MPI_UNSIGNED_LONG_LONG, rank, MESSAGE_STATES_TRACE_ANS1,
@@ -1271,11 +1477,14 @@ void commManager::QueryStateOnTrace_nothreads(unsigned long number, int rank, un
 			}
 		}
 		if (!flag[1]) {
-			err = MPI_Iprobe(rank, MESSAGE_STATES_TRACE_ANS2, MPI_COMM_WORLD, &flag[1], &status);
+			err = MPI_Iprobe(rank, MESSAGE_STATES_TRACE_ANS2, MPI_COMM_WORLD,
+					&flag[1], &status);
 			if (err)
-			DisplayMPIError("MPI_Iprobe() in QueryStateOnTrace_nothreads()", err);
+				DisplayMPIError(
+						"MPI_Iprobe() in QueryStateOnTrace_nothreads()", err);
 			if (flag[1]) {
-				err = MPI_Recv(buf2, MESSAGE_STATES_TRACE_ANS2_INT_LENGTH, MPI_INT, rank, MESSAGE_STATES_TRACE_ANS2,
+				err = MPI_Recv(buf2, MESSAGE_STATES_TRACE_ANS2_INT_LENGTH,
+						MPI_INT, rank, MESSAGE_STATES_TRACE_ANS2,
 						MPI_COMM_WORLD, &status);
 			}
 		}
@@ -1294,28 +1503,30 @@ void commManager::QueryStateOnTrace_nothreads(unsigned long number, int rank, un
 //
 // Called by non-root nodes: they keep waiting for states requests, which are served by looking on the local trace file
 //
-void commManager::LoopForStates_nothreads()
-{
+void commManager::LoopForStates_nothreads() {
 	int err, flag = 0, dummy;
 	MPI_Status status;
 
 	while (!flag) {
-		err = MPI_Iprobe(0, MESSAGE_STATES_TRACE_QUERY, MPI_COMM_WORLD, &flag, &status);
+		err = MPI_Iprobe(0, MESSAGE_STATES_TRACE_QUERY, MPI_COMM_WORLD, &flag,
+				&status);
 		if (err)
-		DisplayMPIError("MPI_Iprobe() in LoopForStates_nothreads()", err);
+			DisplayMPIError("MPI_Iprobe() in LoopForStates_nothreads()", err);
 		if (flag)
-		ReceiveQueryStatesOnTrace_nothreads();
+			ReceiveQueryStatesOnTrace_nothreads();
 
-		err = MPI_Iprobe(0, MESSAGE_TERMINATE_TRACE, MPI_COMM_WORLD, &flag, &status);
+		err = MPI_Iprobe(0, MESSAGE_TERMINATE_TRACE, MPI_COMM_WORLD, &flag,
+				&status);
 		if (err)
-		DisplayMPIError("MPI_Iprobe() in LoopForStates_nothreads()", err);
+			DisplayMPIError("MPI_Iprobe() in LoopForStates_nothreads()", err);
 		/* if received, flag is != 0, so the while is broken */
 		/* this should be useless */
 		if (flag) {
-			err = MPI_Recv(&dummy, MESSAGE_TERMINATE_TRACE_INT_LENGTH, MPI_INT, 0, MESSAGE_TERMINATE_TRACE,
-					MPI_COMM_WORLD, &status);
+			err = MPI_Recv(&dummy, MESSAGE_TERMINATE_TRACE_INT_LENGTH, MPI_INT,
+					0, MESSAGE_TERMINATE_TRACE, MPI_COMM_WORLD, &status);
 			if (err)
-			DisplayMPIError("MPI_Iprobe() in LoopForStates_nothreads()", err);
+				DisplayMPIError("MPI_Iprobe() in LoopForStates_nothreads()",
+						err);
 		}
 	}
 }
@@ -1323,38 +1534,42 @@ void commManager::LoopForStates_nothreads()
 //
 // Called by non-root nodes inside LoopForStates_nothreads, to handle a state request
 //
-void commManager::ReceiveQueryStatesOnTrace_nothreads()
-{
-	int err, flag[3] = {0, 0, 0};
+void commManager::ReceiveQueryStatesOnTrace_nothreads() {
+	int err, flag[3] = { 0, 0, 0 };
 	unsigned long number;
 	unsigned long buf1[3];
 	int buf2;
 	MPI_Request req[3];
 	MPI_Status status;
 
-	err = MPI_Recv(&number, MESSAGE_STATES_TRACE_QUERY_ULONG_LENGTH, MPI_UNSIGNED_LONG, 0, MESSAGE_STATES_TRACE_QUERY,
-			MPI_COMM_WORLD, &status);
+	err = MPI_Recv(&number, MESSAGE_STATES_TRACE_QUERY_ULONG_LENGTH,
+			MPI_UNSIGNED_LONG, 0, MESSAGE_STATES_TRACE_QUERY, MPI_COMM_WORLD,
+			&status);
 	if (err)
-	DisplayMPIError("MPI_Recv() in ReceiveQueryStatesOnTrace_nothreads()", err);
+		DisplayMPIError("MPI_Recv() in ReceiveQueryStatesOnTrace_nothreads()",
+				err);
 
 	buf1[0] = TraceFile->read(number, GetRank())->previous;
 	buf1[1] = TraceFile->read(number, GetRank())->c1;
 	buf1[2] = TraceFile->read(number, GetRank())->c2;
 #if __WORDSIZE == 32
-	err = MPI_Isend(&buf1[0], MESSAGE_STATES_TRACE_ANS1_ULONG_LENGTH, MPI_UNSIGNED_LONG, 0, MESSAGE_STATES_TRACE_ANS1,
-			MPI_COMM_WORLD, &req[0]);
+	err = MPI_Isend(&buf1[0], MESSAGE_STATES_TRACE_ANS1_ULONG_LENGTH,
+			MPI_UNSIGNED_LONG, 0, MESSAGE_STATES_TRACE_ANS1, MPI_COMM_WORLD,
+			&req[0]);
 #else
 	err = MPI_Isend(&buf1[0], MESSAGE_STATES_TRACE_ANS1_ULONG_LENGTH, MPI_UNSIGNED_LONG_LONG, 0, MESSAGE_STATES_TRACE_ANS1,
 			MPI_COMM_WORLD, &req[0]);
 #endif
 	if (err)
-	DisplayMPIError("MPI_Isend() in ReceiveQueryStatesOnTrace_nothreads()", err);
+		DisplayMPIError("MPI_Isend() in ReceiveQueryStatesOnTrace_nothreads()",
+				err);
 
 	buf2 = TraceFile->read(number, GetRank())->rank;
-	err = MPI_Isend(&buf2, MESSAGE_STATES_TRACE_ANS2_INT_LENGTH, MPI_INT, 0, MESSAGE_STATES_TRACE_ANS2,
-			MPI_COMM_WORLD, &req[1]);
+	err = MPI_Isend(&buf2, MESSAGE_STATES_TRACE_ANS2_INT_LENGTH, MPI_INT, 0,
+			MESSAGE_STATES_TRACE_ANS2, MPI_COMM_WORLD, &req[1]);
 	if (err)
-	DisplayMPIError("MPI_Isend() in ReceiveQueryStatesOnTrace_nothreads()", err);
+		DisplayMPIError("MPI_Isend() in ReceiveQueryStatesOnTrace_nothreads()",
+				err);
 
 	/* This while is to allow using local variables in asynchronous sending */
 	while (!flag[0] || !flag[1]) {
@@ -1362,7 +1577,9 @@ void commManager::ReceiveQueryStatesOnTrace_nothreads()
 			if (!flag[i]) {
 				err = MPI_Test(&req[i], &flag[i], &status);
 				if (err)
-				DisplayMPIError("MPI_Test() in ReceiveQueryStatesOnTrace_nothreads()", err);
+					DisplayMPIError(
+							"MPI_Test() in ReceiveQueryStatesOnTrace_nothreads()",
+							err);
 			}
 		}
 	}

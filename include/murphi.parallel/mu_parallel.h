@@ -53,6 +53,10 @@ using std::string;
 #define MESSAGE_TERMINATE_TRACE		15
 #define MESSAGE_STATES_TRACE_QUERY	16
 #define MESSAGE_STATES_REPLY            17
+#define QUEUE_TAKEOVER_REQUEST			18
+#define QUEUE_TAKEOVER_REPLY		19
+#define MESSAGE_CANCEL_QUEUE		20
+
 
 #define MESSAGE_STATES_REPLY_INT_LENGTH         1
 #define MESSAGE_TERMINATE_ULONG_LENGTH 		3
@@ -66,6 +70,11 @@ using std::string;
 #define MESSAGE_STATES_TRACE_ANS2_INT_LENGTH	1
 #define MESSAGE_TERMINATE_TRACE_INT_LENGTH	1
 #define MESSAGE_STATES_TRACE_QUERY_ULONG_LENGTH	1
+#define QUEUE_TAKEOVER_REQUEST_INT_LENGTH	1
+#define QUEUE_TAKEOVER_REPLY_INT_LENGTH		2
+#define MESSAGE_CANCEL_QUEUE_LENGTH			1
+
+
 
 /* Allow to specify also at compilation time */
 #ifndef YIELD 
@@ -88,6 +97,7 @@ public:
   commManager(void (*Hashstats)(int, unsigned long *, double *, bool *), int (*Queue)(char*, int), int (*workWaiting)(), 
               int stateLen, int *argc, char*** argv);
   ~commManager();
+  int getNumBuffers();
   void InitializeCommQueues(int NumBuffs, int BuffSize);
   int  PushState(char* data1, int owner);
   void CheckStableCondition();
@@ -172,6 +182,9 @@ private:
   unsigned int Min_states_in_msg;
   double Avg_states_in_msg;
   short *m_stateReplyCount;  // Reply count for state messages sent
+  int currentTakeoverAffirmation;
+  bool pendingQueueTakover;
+  bool queuesUnOwned;
 
   bool workerWaiting;
 
@@ -229,6 +242,15 @@ private:
   bool PushReq(MPI_Request, int, int);
   void PopReq(int, int);
   bool ProcessMessages();
+
+  void RequestQueueTakover();
+  void ReceiveQueueTakoverRequest();
+  void ReceiveQueueTakeoverReply();
+
+  int BroadcastMessage(void* buf, int size, MPI_Datatype dType,
+  		int mTag, MPI_Comm comm, MPI_Request *req, string funcName);
+
+
   void ReceiveStates();
   void ReceiveStatesReply();
   void ReceiveTerminate();
@@ -249,6 +271,8 @@ private:
   void ReceiveQueryStatesOnTrace_nothreads();
 #endif
   bool isAwaitingStateReplies();
+
+  inline int lookupOwner(int ownerKey);
 };
 
 #endif

@@ -37,6 +37,7 @@ public:
 	//bool IsMutexLocked(int);
 	int UnLockMutex(int);
 	int WaitMutex(int);
+	int WaitTimedMutex(int mutex, const timespec *wait);
 	int WakeUpMutex(int);
 };
 

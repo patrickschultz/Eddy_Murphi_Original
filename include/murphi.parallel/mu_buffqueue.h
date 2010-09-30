@@ -73,12 +73,16 @@ public:
   bool IsSendPending(int);
   unsigned long memory_allocated();
   static unsigned long memory_allocated(int BuffSize, int StateLen, int AuxLen, int NumBuffs);
+  int getOwner();
+  void setOwner(int owner);
 
 private:
   const int MAX_BUFFER_SIZE;
   const int STATE_LENGTH;
   const int OBJ2_LEN;
   const int NUMBER_OF_QUEUE_BUFFERS;
+
+  int owner;
 
   struct cQueue **qArray; //actual data struct
 
